@@ -76,7 +76,7 @@ for root, dirs, files in os.walk(input_directory, topdown=False):
         filename = os.path.relpath(os.path.join(root,name))
         stem, ext = os.path.splitext(filename)
         if ext == '.hs':
-            haskell_file_paths.append(filename)
+            haskell_file_paths.append(os.path.abspath(filename))
 
 # make subprocess call
 # java -cp jar_path alabno.simple_haskell_marker.Main haskell1 haskell2 output_json_path
