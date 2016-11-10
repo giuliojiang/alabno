@@ -23,7 +23,7 @@ object App {
       case "haskell" =>
         val h = new HaskellProcessor(modelAnswer, inputPath)
         h.prepare()
-        println(h.runTests())
+        h.runTests()
         h.runBench()
       case _ => throw new IllegalArgumentException("Wrong language")
     }
