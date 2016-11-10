@@ -57,8 +57,10 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
 
   def runBench() = {
     val (linesModel, linesStudent) = executeOnBoth("Bench")
-    val benchOutcomeStudent = s"$studentSubmission/Bench --output=res.html".!!
-    val benchOutcomeModel = s"$modelAnswer/Bench --output=res.html".!!
+    val benchOutcomeStudent = s"$studentSubmission/Bench " +
+      s"--output=$studentSubmission/res.html".!!
+    val benchOutcomeModel = s"$modelAnswer/Bench " +
+      s"--output=$modelAnswer/res.html".!!
     val zippedMeanModel = genListBenchNameMean(benchOutcomeModel)
     val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent)
   }
