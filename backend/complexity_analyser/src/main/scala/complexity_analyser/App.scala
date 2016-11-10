@@ -4,7 +4,6 @@ import java.io.File
 
 import json_parser.MicroServiceInputParser
 
-import scala.io.Source
 
 /**
   * Simple main to check the access to resources
@@ -18,11 +17,14 @@ object App {
     processLanguage(language, modelAnswer, inputPath)
 
   }
+
   def processLanguage(language: String, modelAnswer: File, inputPath: File): Unit = {
     language match {
       case "haskell" =>
         val h = new HaskellProcessor(modelAnswer, inputPath)
         h.prepare()
+        println(h.runTests())
+        h.runBench()
       case _ => throw new IllegalArgumentException("Wrong language")
     }
   }
