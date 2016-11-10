@@ -11,6 +11,7 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   private final val BENCH_NAME = "/Bench.hs"
   private final val MATCH_BMARK = "benchmarking tests/[a-zA-Z0-9]+".r
   private final val MATCH_MEAN = "[0-9]+\\.[0-9]+".r
+  private final def benchFlags(o: File) = s"--regress cycles:time --output=$o/res.html"
 
   /**
     * Copies Bench.hs to both model solution and student submission
@@ -28,13 +29,13 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
 
 
   def runTests() = {
-    val (linesModel, linesStudent) = executeOnBoth("Tests")
+    compileClassOnBoth("Tests")
     val testOutcomeStudent = s"$studentSubmission/Tests".!!
     val testOutcomeModel = s"$modelAnswer/Tests".!!
     testOutcomeModel.equals(testOutcomeStudent)
   }
 
-  private def executeOnBoth(name: String) = {
+  private def compileClassOnBoth(name: String) = {
     val linesModel = new ArrayBuffer[String]()
     val linesStudent = new ArrayBuffer[String]
     val exitModel = s"ghc -i$modelAnswer/IC -i$modelAnswer --make -O $name -main-is $name" !
@@ -47,22 +48,32 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     (linesModel, linesStudent)
   }
 
+
+  private def produceDelta(zippedMeanModel: Seq[(String, Double)], zippedMeanStud: Seq[(String, Double)]) = {
+    val buff = new ArrayBuffer[(String, Double)]
+    for ((e, i) <- zippedMeanModel.zipWithIndex) {
+      val (name, modY) = e
+      val (_, studY) = zippedMeanStud.apply(i)
+      buff += ((name, modY - studY))
+    }
+    buff
+  }
+
   private def genListBenchNameMean(outcome: String) = {
     val names = MATCH_BMARK.findAllMatchIn(outcome).map(_.toString())
     val details = MATCH_BMARK.split(outcome)
-    val means = details.flatMap(_.split("\n")).filter(_.startsWith("mean"))
+    val means = details.flatMap(_.split("\n")).filter(_.trim.startsWith("y"))
     val doubles = means.map(e => MATCH_MEAN.findFirstIn(e).get.toDouble)
     names.toSeq.zip(doubles)
   }
 
   def runBench() = {
-    val (linesModel, linesStudent) = executeOnBoth("Bench")
-    val benchOutcomeStudent = s"$studentSubmission/Bench " +
-      s"--output=$studentSubmission/res.html".!!
-    val benchOutcomeModel = s"$modelAnswer/Bench " +
-      s"--output=$modelAnswer/res.html".!!
+    compileClassOnBoth("Bench")
+    val benchOutcomeStudent = s"$studentSubmission/Bench ${benchFlags(studentSubmission)}" !!
+    val benchOutcomeModel = s"$modelAnswer/Bench ${benchFlags(modelAnswer)}" !!
     val zippedMeanModel = genListBenchNameMean(benchOutcomeModel)
     val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent)
+    produceDelta(zippedMeanModel, zippedMeanStud).foreach(println)
   }
 
 }
