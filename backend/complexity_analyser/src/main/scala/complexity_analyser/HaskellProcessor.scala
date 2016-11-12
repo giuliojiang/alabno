@@ -11,7 +11,7 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   private final val BENCH_NAME = "/Bench.hs"
   private final val MATCH_BMARK = "benchmarking tests/[a-zA-Z0-9]+".r
   private final val MATCH_MEAN = "[0-9]+\\.[0-9]+".r
-  private final def benchFlags(o: File) = s"--regress cycles:time --output=$o/res.html"
+  private final def benchFlags(o: File) = s"--output=$o/res.html"
 
   /**
     * Copies Bench.hs to both model solution and student submission
@@ -52,9 +52,9 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   private def produceDelta(zippedMeanModel: Seq[(String, Double)], zippedMeanStud: Seq[(String, Double)]) = {
     val buff = new ArrayBuffer[(String, Double)]
     for ((e, i) <- zippedMeanModel.zipWithIndex) {
-      val (name, modY) = e
-      val (_, studY) = zippedMeanStud.apply(i)
-      buff += ((name, modY - studY))
+      val (name, modMean) = e
+      val (_, studMean) = zippedMeanStud.apply(i)
+      buff += ((name, modMean - studMean))
     }
     buff
   }
@@ -62,7 +62,7 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   private def genListBenchNameMean(outcome: String) = {
     val names = MATCH_BMARK.findAllMatchIn(outcome).map(_.toString())
     val details = MATCH_BMARK.split(outcome)
-    val means = details.flatMap(_.split("\n")).filter(_.trim.startsWith("y"))
+    val means = details.flatMap(_.split("\n")).filter(_.trim.startsWith("mean"))
     val doubles = means.map(e => MATCH_MEAN.findFirstIn(e).get.toDouble)
     names.toSeq.zip(doubles)
   }
