@@ -286,7 +286,7 @@ public class WebSocketHandler {
         }
         return linesList;
     }
-    
+
     private void handleGetJob(JsonParser parser, WebSocket conn) {
         String title = parser.getString("title");
         if (title == null || title.isEmpty()) {
