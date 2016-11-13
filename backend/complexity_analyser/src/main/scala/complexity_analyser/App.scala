@@ -12,31 +12,26 @@ import scala.collection.mutable.ArrayBuffer
   * Simple main to check the access to resources
   */
 object App {
-
-  val annotations = new ArrayBuffer[Error]
-  val errorList = new ArrayBuffer[String]
-  var score = 100
+  private val errorList = new ArrayBuffer[String]
 
   def main(args: Array[String]):Unit = {
     val mi = MicroServiceInputParser.parseFile(new File(args apply 0))
     val language = mi.getLanguage
     val modelAnswer = new File(mi.getModelAnswer)
     val inputPath = new File(mi.getPath)
-    processLanguage(language, modelAnswer, inputPath)
+    val (annotations, score) = processLanguage(language, modelAnswer, inputPath)
 
     MicroServiceOutputParser.writeFile(new File(args apply 1), score,
       annotations.asJava, errorList.asJava)
   }
 
-  def processLanguage(language: String, modelAnswer: File, inputPath: File): Unit = {
+  def processLanguage(language: String, modelAnswer: File, inputPath: File) = {
     language match {
       case "haskell" =>
         val h = new HaskellProcessor(modelAnswer, inputPath)
         h.prepare()
         h.runTests()
-        val hBench = h.runBench()
-        annotations ++= hBench._1
-        score = hBench._2
+        h.runBench()
       case _ => throw new IllegalArgumentException("Wrong language")
     }
   }

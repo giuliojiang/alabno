@@ -13,7 +13,6 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   private final val BENCH_NAME = "/Bench.hs"
   private final val MATCH_BMARK = "benchmarking tests/[a-zA-Z0-9]+".r
   private final val MATCH_MEAN = "[0-9]+\\.[0-9]+".r
-  private final def benchFlags(o: File) = s"--output=$o/res.html"
 
   /**
     * Copies Bench.hs to both model solution and student submission
@@ -29,13 +28,24 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     copy(bench.toPath, stud, REPLACE_EXISTING)
   }
 
-
   def runTests() = {
     compileClassOnBoth("Tests")
     val testOutcomeStudent = s"$studentSubmission/Tests".!!
     val testOutcomeModel = s"$modelAnswer/Tests".!!
     testOutcomeModel.equals(testOutcomeStudent)
   }
+
+  def runBench() = {
+    compileClassOnBoth("Bench")
+    val benchOutcomeStudent = s"$studentSubmission/Bench ${benchFlags(studentSubmission)}" !!
+    val benchOutcomeModel = s"$modelAnswer/Bench ${benchFlags(modelAnswer)}" !!
+    val zippedMeanModel = genListBenchNameMean(benchOutcomeModel)
+    val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent)
+    val deltas = produceDelta(zippedMeanModel, zippedMeanStud)
+    calculateScore(deltas)
+  }
+
+  private final def benchFlags(o: File) = s"--output=$o/res.html"
 
   private def compileClassOnBoth(name: String) = {
     val linesModel = new ArrayBuffer[String]()
@@ -50,7 +60,6 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     (linesModel, linesStudent)
   }
 
-
   private def produceDelta(zippedMeanModel: Seq[(String, Double)], zippedMeanStud: Seq[(String, Double)]) = {
     val buff = new ArrayBuffer[(String, Double)]
     for ((e, i) <- zippedMeanModel.zipWithIndex) {
@@ -61,12 +70,23 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     buff
   }
 
+  private def convertToNS(meanLine: String) = {
+    val double = MATCH_MEAN.findFirstIn(meanLine).get.toDouble
+    val factor = meanLine match {
+      case m if m.contains("ns") => 1
+      case m if m.contains("μs") => 1000
+      case m if m.contains("ms") => 1000 * 1000
+      case m if m.contains("s")  => 1000 * 1000 * 1000
+    }
+    double * factor
+  }
+
   private def genListBenchNameMean(outcome: String) = {
     println(outcome)
     val names = MATCH_BMARK.findAllMatchIn(outcome).map(_.toString())
     val details = MATCH_BMARK.split(outcome)
     val means = details.flatMap(_.split("\n")).filter(_.trim.startsWith("mean"))
-    val doubles = means.map(e => MATCH_MEAN.findFirstIn(e).get.toDouble)
+    val doubles = means.map(convertToNS)
     names.toSeq.zip(doubles)
   }
 
@@ -75,23 +95,13 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     val annotations = new ArrayBuffer[Error]
     for ((n, v) <- deltas) {
       val diff = Math.abs(v).round
-      if ( diff > 50 ) {
-        score -= (v/8).toInt
+      if (diff > 50) {
+        score -= (v / 8).toInt
         annotations.append(new Error(s"Function $n is inefficient -> $diff ns diff!",
           studentSubmission.getName, 0, 0, "complexity"))
       }
     }
     (annotations, score)
-  }
-
-  def runBench() = {
-    compileClassOnBoth("Bench")
-    val benchOutcomeStudent = s"$studentSubmission/Bench ${benchFlags(studentSubmission)}" !!
-    val benchOutcomeModel = s"$modelAnswer/Bench ${benchFlags(modelAnswer)}" !!
-    val zippedMeanModel = genListBenchNameMean(benchOutcomeModel)
-    val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent)
-    val deltas = produceDelta(zippedMeanModel, zippedMeanStud)
-    calculateScore(deltas)
   }
 
 }
