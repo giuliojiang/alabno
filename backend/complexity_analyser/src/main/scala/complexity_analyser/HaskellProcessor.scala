@@ -4,6 +4,8 @@ import java.io.File
 import java.nio.file.Files.copy
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 
+import json_parser.Error
+
 import scala.collection.mutable.ArrayBuffer
 import scala.sys.process._
 
@@ -60,11 +62,26 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   }
 
   private def genListBenchNameMean(outcome: String) = {
+    println(outcome)
     val names = MATCH_BMARK.findAllMatchIn(outcome).map(_.toString())
     val details = MATCH_BMARK.split(outcome)
     val means = details.flatMap(_.split("\n")).filter(_.trim.startsWith("mean"))
     val doubles = means.map(e => MATCH_MEAN.findFirstIn(e).get.toDouble)
     names.toSeq.zip(doubles)
+  }
+
+  def calculateScore(deltas: ArrayBuffer[(String, Double)]) = {
+    var score = 100
+    val annotations = new ArrayBuffer[Error]
+    for ((n, v) <- deltas) {
+      val diff = Math.abs(v).round
+      if ( diff > 50 ) {
+        score -= (v/8).toInt
+        annotations.append(new Error(s"Function $n is inefficient -> $diff ns diff!",
+          studentSubmission.getName, 0, 0, "complexity"))
+      }
+    }
+    (annotations, score)
   }
 
   def runBench() = {
@@ -73,7 +90,8 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     val benchOutcomeModel = s"$modelAnswer/Bench ${benchFlags(modelAnswer)}" !!
     val zippedMeanModel = genListBenchNameMean(benchOutcomeModel)
     val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent)
-    produceDelta(zippedMeanModel, zippedMeanStud).foreach(println)
+    val deltas = produceDelta(zippedMeanModel, zippedMeanStud)
+    calculateScore(deltas)
   }
 
 }
