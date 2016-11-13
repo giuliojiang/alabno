@@ -8,6 +8,7 @@ import json_parser.Error
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
+import scala.io.Source
 import scala.sys.process._
 
 class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
@@ -15,9 +16,12 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   private final val BENCH_NAME = "/Bench.hs"
   private final val MATCH_BMARK = """benchmarking tests/(\w+)""".r
   private final val MATCH_MEAN = s"$NUMBER\\.$NUMBER+".r
-  private final val TestScore = new mutable.HashMap[String, Int]()
+  private final val TestScore = new mutable.HashMap[String, Int]
 
   private final val TestLine = """(\w+\d?): (\d+) / (\d+)""".r
+  private final val FunctionMap = new mutable.HashMap[String, (Int, String)]
+  private final val FunctionLine = """(\w+\d?)\s+::\s+.+""".r
+
   /**
     * Copies Bench.hs to both model solution and student submission
     */
@@ -26,10 +30,31 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     if (!bench.exists()) throw new Exception("Missing resource Bench.hs")
     if (!modelAnswer.isDirectory) throw new Exception("Model solution should be a directory")
     if (!studentSubmission.isDirectory) throw new Exception("Student submission should be a directory")
-    val mod = new File(modelAnswer.toPath.toString + BENCH_NAME).toPath
-    val stud = new File(studentSubmission.toPath.toString + BENCH_NAME).toPath
-    copy(bench.toPath, mod, REPLACE_EXISTING)
-    copy(bench.toPath, stud, REPLACE_EXISTING)
+    val mod = new File(modelAnswer.toPath.toString + BENCH_NAME)
+    val stud = new File(studentSubmission.toPath.toString + BENCH_NAME)
+    studentSubmission.listFiles().filter(hFilter).foreach(findFunctions)
+    copy(bench.toPath, mod.toPath, REPLACE_EXISTING)
+    copy(bench.toPath, stud.toPath, REPLACE_EXISTING)
+  }
+
+  def findFunctions(file: File) = {
+    for ((l, i) <- Source.fromFile(file).getLines().zipWithIndex) {
+      l match {
+        case FunctionLine(n) =>
+          FunctionMap += ((n, (i + 1, file.toString)))
+        case _ => None
+      }
+    }
+  }
+
+  private def hFilter(f: File) = f.isFile && f.getName.endsWith(".hs") && f.getName != "Tests.hs"
+
+  def runTests() = {
+    compileClassOnBoth("Tests")
+    val testOutcomeStudent = s"$studentSubmission/Tests".!!
+    val testOutcomeModel = s"$modelAnswer/Tests".!!
+    testOutcomeModel.split("\n").foreach(findMaxScoreHeader)
+    calculateTestScores(findStudentScore(testOutcomeStudent))
   }
 
   private def findMaxScoreHeader(line: String): Unit = {
@@ -42,7 +67,7 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
 
   private def findStudentScore(line: String) = {
     val buff = new ArrayBuffer[(String, Integer, Int)]()
-    val lines =line.split("\n")
+    val lines = line.split("\n")
     for (l <- lines) {
       l match {
         case TestLine(name, score, m) =>
@@ -58,31 +83,14 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     var score = 100
     val buff = new ArrayBuffer[Error]
     for ((name, studScore, maxScore) <- testsResult) {
-      score -= 10 * (1 - (studScore / maxScore))
-      buff += new Error(s"Student passes $studScore/$maxScore tests for $name", studentSubmission.getName, 0, 0, "tests")
+      if (studScore != maxScore) {
+        score -= 10 * (1 - (studScore / maxScore))
+        val (line, file) = FunctionMap.getOrElse(name, (0, studentSubmission.getName))
+        buff += new Error(s"Student passes $studScore/$maxScore tests for $name", file, line, 0, "tests")
+      }
     }
     (buff, score)
   }
-
-  def runTests() = {
-    compileClassOnBoth("Tests")
-    val testOutcomeStudent = s"$studentSubmission/Tests".!!
-    val testOutcomeModel = s"$modelAnswer/Tests".!!
-    testOutcomeModel.split("\n").foreach(findMaxScoreHeader)
-    calculateTestScores(findStudentScore(testOutcomeStudent))
-  }
-
-  def runBench() = {
-    compileClassOnBoth("Bench")
-    val benchOutcomeStudent = s"$studentSubmission/Bench ${benchFlags(studentSubmission)}" !!
-    val benchOutcomeModel = s"$modelAnswer/Bench ${benchFlags(modelAnswer)}" !!
-    val zippedMeanModel = genListBenchNameMean(benchOutcomeModel)
-    val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent)
-    val deltas = produceDelta(zippedMeanModel, zippedMeanStud)
-    calculateScore(deltas)
-  }
-
-  private final def benchFlags(o: File) = s"--output=$o/res.html"
 
   private def compileClassOnBoth(name: String) = {
     val linesModel = new ArrayBuffer[String]()
@@ -96,6 +104,18 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
       s"$name solution didn't compile")
     (linesModel, linesStudent)
   }
+
+  def runBench() = {
+    compileClassOnBoth("Bench")
+    val benchOutcomeStudent = s"$studentSubmission/Bench ${benchFlags(studentSubmission)}" !!
+    val benchOutcomeModel = s"$modelAnswer/Bench ${benchFlags(modelAnswer)}" !!
+    val zippedMeanModel = genListBenchNameMean(benchOutcomeModel)
+    val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent)
+    val deltas = produceDelta(zippedMeanModel, zippedMeanStud)
+    calculateScore(deltas)
+  }
+
+  private final def benchFlags(o: File) = s"--output=$o/res.html"
 
   private def produceDelta(zippedMeanModel: Seq[(String, Double)], zippedMeanStud: Seq[(String, Double)]) = {
     val buff = new ArrayBuffer[(String, Double)]
@@ -135,8 +155,9 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
         if (score > 0) {
           score -= (v / 8).toInt
         }
+        val (line, file) = FunctionMap.getOrElse(n, (0, studentSubmission.getName))
         annotations.append(new Error(s"Function $n is inefficient -> $diff ns diff!",
-          studentSubmission.getName, 0, 0, "complexity"))
+          file, line, 0, "complexity"))
       }
     }
     (annotations, score)
