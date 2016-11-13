@@ -6,14 +6,18 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 
 import json_parser.Error
 
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.sys.process._
 
 class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
+  private final val NUMBER = "[0-9]+".r
   private final val BENCH_NAME = "/Bench.hs"
-  private final val MATCH_BMARK = "benchmarking tests/[a-zA-Z0-9]+".r
-  private final val MATCH_MEAN = "[0-9]+\\.[0-9]+".r
+  private final val MATCH_BMARK = """benchmarking tests/(\w+)""".r
+  private final val MATCH_MEAN = s"$NUMBER\\.$NUMBER+".r
+  private final val TestScore = new mutable.HashMap[String, Int]()
 
+  private final val TestLine = """(\w+\d?): (\d+) / (\d+)""".r
   /**
     * Copies Bench.hs to both model solution and student submission
     */
@@ -28,11 +32,44 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     copy(bench.toPath, stud, REPLACE_EXISTING)
   }
 
+  private def findMaxScoreHeader(line: String): Unit = {
+    line match {
+      case TestLine(name, _, max) =>
+        TestScore += ((name, Integer.decode(max)))
+      case _ => None
+    }
+  }
+
+  private def findStudentScore(line: String) = {
+    val buff = new ArrayBuffer[(String, Integer, Int)]()
+    val lines =line.split("\n")
+    for (l <- lines) {
+      l match {
+        case TestLine(name, score, m) =>
+          val max = TestScore.getOrElse(name, m.toInt)
+          buff += ((name, score.toInt, max))
+        case _ => None
+      }
+    }
+    buff
+  }
+
+  private def calculateTestScores(testsResult: Seq[(String, Integer, Int)]) = {
+    var score = 100
+    val buff = new ArrayBuffer[Error]
+    for ((name, studScore, maxScore) <- testsResult) {
+      score -= 10 * (1 - (studScore / maxScore))
+      buff += new Error(s"Student passes $studScore/$maxScore tests for $name", studentSubmission.getName, 0, 0, "tests")
+    }
+    (buff, score)
+  }
+
   def runTests() = {
     compileClassOnBoth("Tests")
     val testOutcomeStudent = s"$studentSubmission/Tests".!!
     val testOutcomeModel = s"$modelAnswer/Tests".!!
-    testOutcomeModel.equals(testOutcomeStudent)
+    testOutcomeModel.split("\n").foreach(findMaxScoreHeader)
+    calculateTestScores(findStudentScore(testOutcomeStudent))
   }
 
   def runBench() = {
@@ -70,24 +107,23 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     buff
   }
 
+  private def genListBenchNameMean(outcome: String) = {
+    val names = MATCH_BMARK.findAllMatchIn(outcome).map(_.group(1))
+    val details = MATCH_BMARK.split(outcome)
+    val means = details.flatMap(_.split("\n")).filter(_.trim.startsWith("mean"))
+    val doubles = means.map(convertToNS)
+    names.toSeq.zip(doubles)
+  }
+
   private def convertToNS(meanLine: String) = {
     val double = MATCH_MEAN.findFirstIn(meanLine).get.toDouble
     val factor = meanLine match {
       case m if m.contains("ns") => 1
       case m if m.contains("μs") => 1000
       case m if m.contains("ms") => 1000 * 1000
-      case m if m.contains("s")  => 1000 * 1000 * 1000
+      case m if m.contains(" s") => 1000 * 1000 * 1000
     }
     double * factor
-  }
-
-  private def genListBenchNameMean(outcome: String) = {
-    println(outcome)
-    val names = MATCH_BMARK.findAllMatchIn(outcome).map(_.toString())
-    val details = MATCH_BMARK.split(outcome)
-    val means = details.flatMap(_.split("\n")).filter(_.trim.startsWith("mean"))
-    val doubles = means.map(convertToNS)
-    names.toSeq.zip(doubles)
   }
 
   def calculateScore(deltas: ArrayBuffer[(String, Double)]) = {
@@ -96,7 +132,9 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     for ((n, v) <- deltas) {
       val diff = Math.abs(v).round
       if (diff > 50) {
-        score -= (v / 8).toInt
+        if (score > 0) {
+          score -= (v / 8).toInt
+        }
         annotations.append(new Error(s"Function $n is inefficient -> $diff ns diff!",
           studentSubmission.getName, 0, 0, "complexity"))
       }
