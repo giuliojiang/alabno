@@ -3,7 +3,7 @@ package complexity_analyser
 import java.io.File
 import java.nio.file.Files.copy
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
-import java.util.concurrent.{Callable, Executor, Executors, ThreadPoolExecutor}
+import java.util.concurrent.{Callable, Executors}
 
 import json_parser.Error
 
@@ -18,15 +18,19 @@ class HaskellProcessor(modelAnswer: File, studentAnswer: File) {
    * Regexes
    */
   // Matches "benchmarking tests/word"
-  private final val BenchmarkLine = """benchmarking tests/(\w+)""".r
+  private final val BenchmarkLine =
+  """benchmarking tests/(\w+)""".r
   // Matches "number.number"
-  private final val matchMean = """(\d+.\d+)""".r
+  private final val matchMean =
+  """(\d+.\d+)""".r
   // Used to find test names and scores
   // Matches "word: number / number"
-  private final val TestLine = """(\w+): (\d+) / (\d+)""".r
+  private final val TestLine =
+  """(\w+): (\d+) / (\d+)""".r
   // Used to find functions in files
   // Matches "word some whitespace :: something else"
-  private final val FunctionLine = """(\w+)\s+::\s+.+""".r
+  private final val FunctionLine =
+  """(\w+)\s+::\s+.+""".r
 
   // Map that stores test name and the max score that you can get (taken from model solution)
   private final val TestScore = new mutable.HashMap[String, Int]
@@ -55,7 +59,8 @@ class HaskellProcessor(modelAnswer: File, studentAnswer: File) {
     val studTest = new File(studentAnswer.toPath.toString + tests).toPath
     val stud = new File(studentAnswer.toPath.toString + benchFile)
     studentAnswer.listFiles().filter(hFilter).foreach(findFunctions)
-    //copy(modTest, studTest, REPLACE_EXISTING)
+    // Ensure that both versions have the same Tests.hs file
+    copy(modTest, studTest, REPLACE_EXISTING)
     copy(bench.toPath, mod.toPath, REPLACE_EXISTING)
     copy(bench.toPath, stud.toPath, REPLACE_EXISTING)
   }
@@ -103,18 +108,28 @@ class HaskellProcessor(modelAnswer: File, studentAnswer: File) {
   }
 
   private def calculateTestScores(testsResult: Seq[(String, Int, Int)]) = {
-    var score : Double = 100.0f
-    val scorePerTest = score / testsResult.length
+    var score: Double = 100.0d
+    val scorePerTest = Math.round(score / testsResult.length)
 
     val buff = new ArrayBuffer[Error]
     for ((name, studScore, maxScore) <- testsResult) {
-      if (studScore != maxScore) {
+      if (studScore < maxScore) {
         score -= scorePerTest * (1 - (studScore / maxScore))
         val (line, file) = FunctionMap.getOrElse(name, (0, studentAnswer.getName))
         buff += new Error(s"Student passes $studScore/$maxScore tests for $name", file, line, 0, "tests")
       }
     }
-    (buff, score)
+    (buff, Math.max(score, 0))
+  }
+
+  def runBench() = {
+    compileClassOnBoth("Bench")
+    val benchOutcomeStudent = eP.submit(new Caller(s"$studentAnswer/Bench ${bFlags(studentAnswer)}"))
+    val benchOutcomeModel = eP.submit(new Caller(s"$modelAnswer/Bench ${bFlags(modelAnswer)}"))
+    val zippedMeanModel = genListBenchNameMean(benchOutcomeModel.get._1)
+    val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent.get._1)
+    val deltas = produceDelta(zippedMeanModel, zippedMeanStud)
+    calculateScore(deltas)
   }
 
   private def compileClassOnBoth(name: String) = {
@@ -126,29 +141,9 @@ class HaskellProcessor(modelAnswer: File, studentAnswer: File) {
 
     val (outputModel, returnModel) = exitModel.get
     val (outputStudent, returnStudent) = exitStudent.get
-    if (returnModel != 0 || returnStudent != 0) throw new Exception(s"Student or Model " +
-      s"$name solution didn't compile")
+    if (returnModel != 0) throw new IllegalStateException("Model solution did not compile")
+    if (returnStudent != 0) throw new IllegalStateException(s"Student answer didn't compile")
     (outputModel, outputStudent)
-  }
-
-
-  private class Caller(command: String) extends Callable[(String, Int)] {
-    override def call(): (String, Int) =  {
-      val lines = new ArrayBuffer[String]
-      val exitStatus = command ! ProcessLogger(line => lines.append(line))
-
-      (lines.mkString("\n"), exitStatus)
-    }
-  }
-
-  def runBench() = {
-    compileClassOnBoth("Bench")
-    val benchOutcomeStudent = eP.submit(new Caller(s"$studentAnswer/Bench ${bFlags(studentAnswer)}"))
-    val benchOutcomeModel = eP.submit(new Caller(s"$modelAnswer/Bench ${bFlags(modelAnswer)}"))
-    val zippedMeanModel = genListBenchNameMean(benchOutcomeModel.get._1)
-    val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent.get._1)
-    val deltas = produceDelta(zippedMeanModel, zippedMeanStud)
-    calculateScore(deltas)
   }
 
   private final def bFlags(o: File) = s"--output=$o/res.html"
@@ -189,14 +184,23 @@ class HaskellProcessor(modelAnswer: File, studentAnswer: File) {
       val diff = Math.abs(v).round
       if (diff > 50) {
         if (score > 0) {
-          score -= (v / 8).toInt
+          score -= (diff / 8).toInt
         }
         val (line, file) = FunctionMap.getOrElse(n, (0, studentAnswer.getName))
         annotations.append(new Error(s"Function $n is inefficient -> $diff ns diff!",
           file, line, 0, "complexity"))
       }
     }
-    (annotations, score)
+    (annotations, Math.max(score, 0))
+  }
+
+  private class Caller(command: String) extends Callable[(String, Int)] {
+    override def call(): (String, Int) = {
+      val lines = new ArrayBuffer[String]
+      val exitStatus = command ! ProcessLogger(line => lines.append(line))
+
+      (lines.mkString("\n"), exitStatus)
+    }
   }
 
 }

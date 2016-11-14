@@ -2,9 +2,9 @@ package complexity_analyser
 
 import java.io.File
 
-import scala.collection.JavaConverters._
-import json_parser.{MicroServiceOutputParser, Error, MicroServiceInputParser}
+import json_parser.{Error, MicroServiceInputParser, MicroServiceOutputParser}
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
 
@@ -12,8 +12,6 @@ import scala.collection.mutable.ArrayBuffer
   * Simple main to check the access to resources
   */
 object App {
-  private val errorList = new ArrayBuffer[String]
-
   def main(args: Array[String]): Unit = {
     if (args.length != 2)
       throw new IllegalArgumentException("CompAnal <input.json> <output.json>")
@@ -21,10 +19,18 @@ object App {
     val language = mi.getLanguage
     val modelAnswer = new File(mi.getModelAnswer)
     val inputPath = new File(mi.getPath)
-    val (annotations, score) : (Seq[Error], Double) = processLanguage(language, modelAnswer, inputPath)
-
+    var annotations: Seq[Error] = Seq()
+    var errors = new ArrayBuffer[String]
+    var score = 100.0d
+    try {
+      val (a, s) = processLanguage(language, modelAnswer, inputPath)
+      annotations = a
+      score = s
+    } catch {
+      case e: Exception => errors += e.getMessage
+    }
     MicroServiceOutputParser.writeFile(new File(args apply 1), score,
-      annotations.asJava, errorList.asJava)
+      annotations.asJava, errors.asJava)
     System.exit(0)
   }
 
@@ -35,11 +41,7 @@ object App {
         h.prepare()
         val (errors, score) = h.runTests()
         val (compErrors, compScore) = h.runBench()
-        val finalScore = if (score - compScore <= 0)
-          0
-        else
-          score - compScore
-        (errors ++ compErrors, finalScore)
+        (errors ++ compErrors, compScore - score)
       case _ => throw new IllegalArgumentException("Wrong language")
     }
   }
