@@ -3,36 +3,59 @@ package complexity_analyser
 import java.io.File
 import java.nio.file.Files.copy
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.util.concurrent.{Callable, Executor, Executors, ThreadPoolExecutor}
 
 import json_parser.Error
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.io.Source
-import scala.sys.process._
+import scala.sys.process.{ProcessLogger, _}
 
-class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
-  private final val NUMBER = "[0-9]+".r
-  private final val BENCH_NAME = "/Bench.hs"
-  private final val MATCH_BMARK = """benchmarking tests/(\w+)""".r
-  private final val MATCH_MEAN = s"$NUMBER\\.$NUMBER+".r
+class HaskellProcessor(modelAnswer: File, studentAnswer: File) {
+
+  /*
+   * Regexes
+   */
+  // Matches "benchmarking tests/word"
+  private final val BenchmarkLine = """benchmarking tests/(\w+)""".r
+  // Matches "number.number"
+  private final val matchMean = """(\d+.\d+)""".r
+  // Used to find test names and scores
+  // Matches "word: number / number"
+  private final val TestLine = """(\w+): (\d+) / (\d+)""".r
+  // Used to find functions in files
+  // Matches "word some whitespace :: something else"
+  private final val FunctionLine = """(\w+)\s+::\s+.+""".r
+
+  // Map that stores test name and the max score that you can get (taken from model solution)
   private final val TestScore = new mutable.HashMap[String, Int]
 
-  private final val TestLine = """(\w+\d?): (\d+) / (\d+)""".r
+  // Map that stores function name, line and file where it is located
   private final val FunctionMap = new mutable.HashMap[String, (Int, String)]
-  private final val FunctionLine = """(\w+\d?)\s+::\s+.+""".r
+
+  // Used to run the compilations and the benchmarks
+  private final val eP = Executors.newFixedThreadPool(2)
 
   /**
     * Copies Bench.hs to both model solution and student submission
+    * Finds all the functions in the student submission
+    * so that later we can trace them back
+    * Copies the Model test suite to the student, just in case they changed it
     */
   def prepare(): Unit = {
-    val bench = new File(getClass.getResource(BENCH_NAME).toURI)
+    val benchFile = "/Bench.hs"
+    val tests = "/Tests.hs"
+    val bench = new File(getClass.getResource(benchFile).toURI)
     if (!bench.exists()) throw new Exception("Missing resource Bench.hs")
     if (!modelAnswer.isDirectory) throw new Exception("Model solution should be a directory")
-    if (!studentSubmission.isDirectory) throw new Exception("Student submission should be a directory")
-    val mod = new File(modelAnswer.toPath.toString + BENCH_NAME)
-    val stud = new File(studentSubmission.toPath.toString + BENCH_NAME)
-    studentSubmission.listFiles().filter(hFilter).foreach(findFunctions)
+    if (!studentAnswer.isDirectory) throw new Exception("Student submission should be a directory")
+    val mod = new File(modelAnswer.toPath.toString + benchFile)
+    val modTest = new File(modelAnswer.toPath.toString + tests).toPath
+    val studTest = new File(studentAnswer.toPath.toString + tests).toPath
+    val stud = new File(studentAnswer.toPath.toString + benchFile)
+    studentAnswer.listFiles().filter(hFilter).foreach(findFunctions)
+    //copy(modTest, studTest, REPLACE_EXISTING)
     copy(bench.toPath, mod.toPath, REPLACE_EXISTING)
     copy(bench.toPath, stud.toPath, REPLACE_EXISTING)
   }
@@ -51,22 +74,22 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
 
   def runTests() = {
     compileClassOnBoth("Tests")
-    val testOutcomeStudent = s"$studentSubmission/Tests".!!
-    val testOutcomeModel = s"$modelAnswer/Tests".!!
-    testOutcomeModel.split("\n").foreach(findMaxScoreHeader)
-    calculateTestScores(findStudentScore(testOutcomeStudent))
+    val testOutcomeStudent = eP.submit(new Caller(s"$studentAnswer/Tests"))
+    val testOutcomeModel = eP.submit(new Caller(s"$modelAnswer/Tests"))
+    testOutcomeModel.get._1.split("\n").foreach(findMaxScoreHeader)
+    calculateTestScores(findStudentScore(testOutcomeStudent.get._1))
   }
 
   private def findMaxScoreHeader(line: String): Unit = {
     line match {
       case TestLine(name, _, max) =>
-        TestScore += ((name, Integer.decode(max)))
+        TestScore += ((name, max.toInt))
       case _ => None
     }
   }
 
   private def findStudentScore(line: String) = {
-    val buff = new ArrayBuffer[(String, Integer, Int)]()
+    val buff = new ArrayBuffer[(String, Int, Int)]()
     val lines = line.split("\n")
     for (l <- lines) {
       l match {
@@ -79,13 +102,15 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
     buff
   }
 
-  private def calculateTestScores(testsResult: Seq[(String, Integer, Int)]) = {
-    var score = 100
+  private def calculateTestScores(testsResult: Seq[(String, Int, Int)]) = {
+    var score : Double = 100.0f
+    val scorePerTest = score / testsResult.length
+
     val buff = new ArrayBuffer[Error]
     for ((name, studScore, maxScore) <- testsResult) {
       if (studScore != maxScore) {
-        score -= 10 * (1 - (studScore / maxScore))
-        val (line, file) = FunctionMap.getOrElse(name, (0, studentSubmission.getName))
+        score -= scorePerTest * (1 - (studScore / maxScore))
+        val (line, file) = FunctionMap.getOrElse(name, (0, studentAnswer.getName))
         buff += new Error(s"Student passes $studScore/$maxScore tests for $name", file, line, 0, "tests")
       }
     }
@@ -93,29 +118,40 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   }
 
   private def compileClassOnBoth(name: String) = {
-    val linesModel = new ArrayBuffer[String]()
-    val linesStudent = new ArrayBuffer[String]
-    val exitModel = s"ghc -i$modelAnswer/IC -i$modelAnswer --make -O $name -main-is $name" !
-      ProcessLogger(line => linesModel.append(line))
-    val exitStudent = s"ghc -i$studentSubmission/IC -i$studentSubmission " +
-      s"--make -O $name -main-is $name" !
-      ProcessLogger(line => linesStudent.append(line))
-    if (exitModel != 0 || exitStudent != 0) throw new Exception(s"Student or Model " +
+    val exitModel = eP.submit(new Caller(s"ghc -i$modelAnswer/IC -i$modelAnswer " +
+      s"--make -O3 $name -main-is $name"))
+
+    val exitStudent = eP.submit(new Caller(s"ghc -i$studentAnswer/IC -i$studentAnswer " +
+      s"--make -O3 $name -main-is $name"))
+
+    val (outputModel, returnModel) = exitModel.get
+    val (outputStudent, returnStudent) = exitStudent.get
+    if (returnModel != 0 || returnStudent != 0) throw new Exception(s"Student or Model " +
       s"$name solution didn't compile")
-    (linesModel, linesStudent)
+    (outputModel, outputStudent)
+  }
+
+
+  private class Caller(command: String) extends Callable[(String, Int)] {
+    override def call(): (String, Int) =  {
+      val lines = new ArrayBuffer[String]
+      val exitStatus = command ! ProcessLogger(line => lines.append(line))
+
+      (lines.mkString("\n"), exitStatus)
+    }
   }
 
   def runBench() = {
     compileClassOnBoth("Bench")
-    val benchOutcomeStudent = s"$studentSubmission/Bench ${benchFlags(studentSubmission)}" !!
-    val benchOutcomeModel = s"$modelAnswer/Bench ${benchFlags(modelAnswer)}" !!
-    val zippedMeanModel = genListBenchNameMean(benchOutcomeModel)
-    val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent)
+    val benchOutcomeStudent = eP.submit(new Caller(s"$studentAnswer/Bench ${bFlags(studentAnswer)}"))
+    val benchOutcomeModel = eP.submit(new Caller(s"$modelAnswer/Bench ${bFlags(modelAnswer)}"))
+    val zippedMeanModel = genListBenchNameMean(benchOutcomeModel.get._1)
+    val zippedMeanStud = genListBenchNameMean(benchOutcomeStudent.get._1)
     val deltas = produceDelta(zippedMeanModel, zippedMeanStud)
     calculateScore(deltas)
   }
 
-  private final def benchFlags(o: File) = s"--output=$o/res.html"
+  private final def bFlags(o: File) = s"--output=$o/res.html"
 
   private def produceDelta(zippedMeanModel: Seq[(String, Double)], zippedMeanStud: Seq[(String, Double)]) = {
     val buff = new ArrayBuffer[(String, Double)]
@@ -128,15 +164,15 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
   }
 
   private def genListBenchNameMean(outcome: String) = {
-    val names = MATCH_BMARK.findAllMatchIn(outcome).map(_.group(1))
-    val details = MATCH_BMARK.split(outcome)
+    val names = BenchmarkLine.findAllMatchIn(outcome).map(_.group(1))
+    val details = BenchmarkLine.split(outcome)
     val means = details.flatMap(_.split("\n")).filter(_.trim.startsWith("mean"))
     val doubles = means.map(convertToNS)
     names.toSeq.zip(doubles)
   }
 
   private def convertToNS(meanLine: String) = {
-    val double = MATCH_MEAN.findFirstIn(meanLine).get.toDouble
+    val double = matchMean.findFirstIn(meanLine).get.toDouble
     val factor = meanLine match {
       case m if m.contains("ns") => 1
       case m if m.contains("μs") => 1000
@@ -155,7 +191,7 @@ class HaskellProcessor(modelAnswer: File, studentSubmission: File) {
         if (score > 0) {
           score -= (v / 8).toInt
         }
-        val (line, file) = FunctionMap.getOrElse(n, (0, studentSubmission.getName))
+        val (line, file) = FunctionMap.getOrElse(n, (0, studentAnswer.getName))
         annotations.append(new Error(s"Function $n is inefficient -> $diff ns diff!",
           file, line, 0, "complexity"))
       }
